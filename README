@@ -1,0 +1,17 @@
+nio – ncurses input/output
+
+nio is a pager with a line-based input at the bottom.
+nio is intended as an interface to the irc client ii.
+
+usage:
+    nio OUTPUTFILE INPUTFILE [-h HIGHLIGHT] [-i INTERVAL] [-p PROMPT] [-w PID]
+
+dependencies:
+    - python-2.7 <http://www.python.org/getit/releases/2.7/>
+    - python-opster <http://pypi.python.org/pypi/opster/>
+    - python-urwid <http://excess.org/urwid/>
+
+known bugs:
+    - python-urwid 0.x cannot into UTF-8 input (python-urwid 1.x can)
+    - nio makes lots of stat() calls, should use inotify
+    - if the monitored file shrinks, nio crashes

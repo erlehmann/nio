@@ -1,0 +1,187 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# nio – ncurses-based pager with line-based input
+# Copyright (C) 2012  Nils Dagsson Moskopp
+#
+# Parts of this program are based on the Urwid example text editor,
+# Copyright (C) 2004-2009  Ian Ward
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public
+# License as published by the Free Software Foundation; either
+# version 3 of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public
+# License along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+from opster import command
+from os import kill, path, stat
+from sys import stdout
+
+import urwid
+
+class LineWalker(urwid.ListWalker):
+    """ListWalker-compatible class for displaying file contents."""
+
+    def __init__(self, filename, highlight):
+        self.filename = filename
+        self.highlight = highlight
+        self.lines = []
+        self.focus = 0
+        self._update()
+
+    def get_focus(self):
+        return self._get_at_pos(self.focus)
+
+    @property
+    def current_line(self):
+        return self.get_focus()[1] + 1
+
+    @property
+    def line_count(self):
+        return len(self.lines)
+
+    def set_focus(self, focus):
+        self.focus = focus
+        self._modified()
+
+    def get_next(self, start_from):
+        return self._get_at_pos(start_from + 1)
+    
+    def get_prev(self, start_from):
+        return self._get_at_pos(start_from - 1)
+
+    def _update(self):
+        """Update lines with current file contents."""
+        self.lines = []
+        with open(self.filename) as f:
+            for line in f.readlines():
+                self._add_line(line)
+        if self.lines == []:  # file is empty
+            self._add_line(' ')
+
+    def _add_line(self, line):
+        """All another line to view."""
+        _line = []
+        for word in line.split():
+            if word == self.highlight:
+                _line.append(('highlight', word))
+                stdout.write('\a')
+            else:
+                _line.append(word)
+            _line.append(' ')
+        _line.append(' ')  # no empty lines allowed
+        text = urwid.Text(_line)
+        self.lines.append(text)        
+
+    def _get_at_pos(self, pos):
+        """Return a widget for the line number passed."""
+        if pos < 0:
+            return None, None
+
+        if len(self.lines) > pos:
+            return self.lines[pos], pos
+
+        if len(self.lines) <= pos:
+            return None, None        
+
+# single line input modeled after <http://www.nicosphere.net/footer-edit-with-urwid-irc-client-like-input-2547/>
+class CustomEdit(urwid.Edit):
+    __metaclass__ = urwid.signals.MetaSignals
+    signals = ['done']
+
+    def keypress(self, size, key):
+        if key == 'enter':
+            urwid.emit_signal(self, 'done', self.get_edit_text())
+            return
+        if key == 'ctrl d':
+            raise urwid.ExitMainLoop()
+        urwid.Edit.keypress(self, size, key)
+
+@command(usage='OUTPUTFILE INPUTFILE [-h HIGHLIGHT] [-i INTERVAL] [-p PROMPT] [-w PID]')
+def main(
+    outputfile,
+    inputfile,
+    highlight=('h', '', 'highlight string, triggers beep'),
+    interval=('f', 0.1, 'update interval in seconds'),
+    prompt=('p', '>>>', 'input prompt'),
+    watch=('w', 0, 'PID to watch, quit if process exits')
+):
+    walker = LineWalker(outputfile, highlight)
+    content = urwid.ListBox(walker)
+    content.set_focus(len(walker.lines)-1)
+
+    prompt = urwid.Text(prompt)
+    input = CustomEdit('')
+    inputbar = urwid.Columns([('flow', prompt), input], dividechars=1)
+
+    def edit_done(content):
+        with open(inputfile, 'a') as f:
+            f.write(content+'\n')
+            input.set_edit_text('')
+    urwid.connect_signal(input, 'done', edit_done)
+
+    filebar = urwid.Text(path.basename(outputfile), align='left')
+    linebar = urwid.Text('', align='right')
+    statusbar = urwid.AttrMap(urwid.Columns([filebar, linebar]), 'bar')
+    footer = urwid.Pile([statusbar, inputbar])
+
+    view = urwid.Frame(content, footer=footer, focus_part='footer')
+
+    palette = [
+        ('highlight', 'default, bold', 'default', 'bold'),
+        ('bar', 'light gray, standout', 'black', 'standout')
+    ]
+
+    def scrollToBottom():
+        content.set_focus(len(walker.lines)-1)
+
+    def checkFile(loop, prev_mtime):
+        mtime = stat(outputfile).st_mtime
+        if mtime != prev_mtime:
+            updateContent()
+            prev_mtime = mtime
+        loop.set_alarm_in(interval, checkFile, prev_mtime)
+
+    def checkProcess(loop, pid):
+        try:
+            kill(pid, 0)  # does nothing, fails if pid does not exist
+            loop.set_alarm_in(interval, checkProcess, watch)
+        except OSError:
+            raise urwid.ExitMainLoop()
+
+    def updateContent():
+        scroll = False
+        if content.get_focus()[1] == len(walker.lines)-1:
+            scroll = True
+        walker._update()
+        if scroll:
+            scrollToBottom()
+
+    def updateStatus():
+        percentage = (100*walker.current_line/walker.line_count)
+        status = "%s/%s (%s%%)" % (
+            walker.current_line,
+            walker.line_count,
+            percentage
+        )
+        linebar.base_widget.set_text(status)
+
+    events = urwid.SelectEventLoop()
+    events.enter_idle(updateStatus)
+
+    loop = urwid.MainLoop(view, palette=palette, event_loop=events)
+    loop.set_alarm_in(interval, checkFile, 0)
+    if watch:
+        loop.set_alarm_in(interval, checkProcess, watch)
+    loop.run()
+
+if __name__ == '__main__':
+    main.command()
